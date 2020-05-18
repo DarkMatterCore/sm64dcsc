@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include <inttypes.h>
 
-#define VERSION             "0.1"
+#define VERSION             "0.2"
 
 #define SAVE_FILE_COUNT     4
 #define SAVE_FILE_MAGIC     (uint16_t)0x4441    /* "DA" */
@@ -141,7 +141,7 @@ static bool toolsIsBigEndian(void);
 static bool toolsValidateDestFormat(char *dest_format_str, uint8_t *dest_type);
 static void toolsPrintUsage(char **argv);
 static uint8_t toolsGetSaveType(void);
-static void toolsConvertSave(uint8_t save_type, uint8_t dest_type);
+static void toolsConvertSave(void);
 
 int main(int argc, char **argv)
 {
@@ -152,7 +152,7 @@ int main(int argc, char **argv)
     
     uint8_t save_type = SaveType_Invalid, dest_type = SaveType_Invalid;
     
-    char outpath[0x1000] = {0};
+    char *outpath = NULL, *tmp = NULL;
     bool remove_outfile = false;
     
     big_endian_flag = toolsIsBigEndian();
@@ -216,28 +216,34 @@ int main(int argc, char **argv)
     }
     
     /* Convert save */
-    toolsConvertSave(save_type, dest_type);
+    toolsConvertSave();
     
     /* Save output file */
-    snprintf(outpath, MAX_ELEMENTS(outpath), argv[1]);
-    
-    char *tmp = strrchr(outpath, '\\');
-    if (!tmp) tmp = strrchr(outpath, '/');
-    
-    if (tmp)
+    outpath = calloc(strlen(argv[1]) + 0x20, sizeof(char));
+    if (!outpath)
     {
-        tmp++;
-        *tmp = '\0';
-    } else {
-        *outpath = '\0';
+        ret = -6;
+        printf("\n\tError allocating memory for output path!\n");
+        goto out;
     }
+    
+    sprintf(outpath, argv[1]);
+    
+#if defined(WIN32) || defined(_WIN32) || defined(__WIN32__) || defined(__NT__)
+    tmp = strrchr(outpath, '\\');
+#else
+    tmp = strrchr(outpath, '/');
+#endif
+    
+    tmp = (tmp ? (tmp + 1) : outpath);
+    *tmp = '\0';
     
     strcat(outpath, FULL_SAVE_NAME(dest_type));
     
     fd = fopen(outpath, "wb");
     if (!fd)
     {
-        ret = -6;
+        ret = -7;
         printf("\n\tError opening \"%s\" for writing.\n", outpath);
         goto out;
     }
@@ -245,7 +251,7 @@ int main(int argc, char **argv)
     fres = fwrite(&save_buf, 1, sizeof(SaveBuffer), fd);
     if (fres != sizeof(SaveBuffer))
     {
-        ret = -7;
+        ret = -8;
         remove_outfile = true;
         printf("\n\tFailed to write converted save data!\n");
         goto out;
@@ -256,6 +262,7 @@ int main(int argc, char **argv)
 out:
     if (fd) fclose(fd);
     if (remove_outfile) remove(outpath);
+    if (outpath) free(outpath);
     
     return ret;
 }
@@ -297,11 +304,10 @@ static void toolsPrintUsage(char **argv)
     printf("\t\t- \"n64\": N64 save format (Big Endian, works with SM64 ports for BE CPUs).\n");
     printf("\t\t- \"decomp\": Common decompilation save format (Little Endian).\n\n");
     printf("\tNotes:\n\n");
-    printf("\t\t- Input format is automatically detected (N64 vs Decomp).\n");
-    printf("\t\t- Output format will always match the CPU endianness.\n");
+    printf("\t\t- Input format / endianness is automatically detected.\n");
     printf("\t\t- RetroArch SRM saves are supported.\n");
     printf("\t\t- Output file will get saved to the same directory as the input file.\n");
-    printf("\t\t- Output file name will either be \"%s\" or \"%s\" depending\n\t\t  on the output type.\n", FULL_SAVE_NAME(SaveType_N64), FULL_SAVE_NAME(SaveType_Decomp));
+    printf("\t\t- Output file name will either be \"%s\" or \"%s\" depending\n\t\t  on the output format type.\n", FULL_SAVE_NAME(SaveType_N64), FULL_SAVE_NAME(SaveType_Decomp));
 }
 
 static uint8_t toolsGetSaveType(void)
@@ -342,9 +348,9 @@ static uint8_t toolsGetSaveType(void)
     
     if (big_endian_flag)
     {
-        cur_type = (magic == SAVE_FILE_MAGIC ? SaveType_N64 : SaveType_Decomp);
+        cur_type = (magic == GLOBAL_DATA_MAGIC ? SaveType_N64 : SaveType_Decomp);
     } else {
-        cur_type = (magic == SAVE_FILE_MAGIC ? SaveType_Decomp : SaveType_N64);
+        cur_type = (magic == GLOBAL_DATA_MAGIC ? SaveType_Decomp : SaveType_N64);
     }
     
     if (cur_type != prev_type) return SaveType_Invalid;
@@ -352,10 +358,8 @@ static uint8_t toolsGetSaveType(void)
     return cur_type;
 }
 
-static void toolsConvertSave(uint8_t save_type, uint8_t dest_type)
+static void toolsConvertSave(void)
 {
-    if (save_type == dest_type) return;
-    
     uint32_t flags = 0;
     
     /* Process save files */
